@@ -4,7 +4,11 @@ from typing import List, Optional
 import httpx
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
-from prompts import SYSTEM_PROMPT
+
+try:
+    from backend.prompts import SYSTEM_PROMPT
+except ModuleNotFoundError:
+    from prompts import SYSTEM_PROMPT
 
 ROOT=Path(__file__).resolve().parent.parent
 TEXT_DATA=ROOT/'data'/'chunks.json'
