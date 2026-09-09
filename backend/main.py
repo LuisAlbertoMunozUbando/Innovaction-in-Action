@@ -7,8 +7,9 @@ from pydantic import BaseModel
 from prompts import SYSTEM_PROMPT
 
 ROOT=Path(__file__).resolve().parent.parent
-DATA=ROOT/'data'/'chunks.json'
-app=FastAPI(title='Innovaction in Action API',version='0.1.0')
+TEXT_DATA=ROOT/'data'/'chunks.json'
+IMAGE_DATA=ROOT/'data'/'image_chunks.json'
+app=FastAPI(title='Innovaction in Action API',version='0.2.0')
 
 class Req(BaseModel):
     language:str='es'; objective:str; organization:Optional[str]=None; audience:Optional[str]=None
@@ -22,32 +23,80 @@ def check(key):
     expected=os.getenv('SPARK_INNOVACTION_API_KEY','')
     if expected and key!=expected: raise HTTPException(401,'invalid api key')
 
-def retrieve(query,k=7):
-    if not DATA.exists(): return []
-    chunks=json.loads(DATA.read_text(encoding='utf-8'))
-    q=set(re.findall(r'[\wáéíóúñü]+',query.lower()))
+def load_chunks():
+    out=[]
+    for path in (TEXT_DATA,IMAGE_DATA):
+        if not path.exists(): continue
+        try:
+            data=json.loads(path.read_text(encoding='utf-8'))
+            if isinstance(data,list): out.extend(data)
+        except Exception as e:
+            print(f'WARN loading {path}: {e}')
+    return out
+
+def tokenize(text):
+    return set(re.findall(r'[\wáéíóúñü]+', (text or '').lower(), flags=re.UNICODE))
+
+def retrieve(query,k=10):
+    chunks=load_chunks()
+    q=tokenize(query)
     ranked=[]
     for c in chunks:
-        words=set(re.findall(r'[\wáéíóúñü]+',c['text'].lower()))
-        score=len(q & words)+sum(2 for tag in c.get('tags',[]) if tag.lower() in query.lower())
+        text=c.get('text',''); words=tokenize(text)
+        overlap=len(q & words)
+        tags=[str(t).lower() for t in c.get('tags',[])]
+        tag_score=sum(3 for tag in tags if any(tok in tag or tag in tok for tok in q))
+        title_boost=2 if any(tok in text[:250].lower() for tok in q) else 0
+        source_boost=1 if c.get('source_type')=='image-analysis' else 0
+        score=overlap+tag_score+title_boost+source_boost
         if score: ranked.append((score,c))
-    return [c for _,c in sorted(ranked,key=lambda x:x[0],reverse=True)[:k]]
+    ranked.sort(key=lambda x:x[0],reverse=True)
+    # Avoid repeated photos/duplicate chunks crowding the context.
+    seen=set(); result=[]
+    for _,c in ranked:
+        key=(c.get('source'),c.get('page'))
+        if key in seen: continue
+        seen.add(key); result.append(c)
+        if len(result)>=k: break
+    return result
 
 @app.get('/health')
-def health(): return {'ok':True,'service':'innovaction-in-action'}
+def health():
+    chunks=load_chunks()
+    return {'ok':True,'service':'innovaction-in-action','version':'0.2.0','knowledge_chunks':len(chunks)}
+
+@app.get('/knowledge/status')
+def knowledge_status():
+    chunks=load_chunks()
+    by_type={}
+    for c in chunks:
+        t=c.get('source_type','unknown'); by_type[t]=by_type.get(t,0)+1
+    return {'total_chunks':len(chunks),'by_type':by_type,'text_file':TEXT_DATA.exists(),'image_file':IMAGE_DATA.exists()}
 
 @app.post('/generate',response_model=Plan)
 async def generate(req:Req,x_api_key:str|None=Header(default=None)):
     check(x_api_key)
-    ctx=retrieve(' '.join(filter(None,[req.objective,req.organization,req.audience,req.maturity,req.constraints])))
-    context='\n\n'.join(f"SOURCE {c.get('source','Innovaction')} p.{c.get('page','?')} tags={','.join(c.get('tags',[]))}: {c['text']}" for c in ctx)
+    query=' '.join(filter(None,[req.objective,req.organization,req.audience,req.maturity,req.constraints]))
+    ctx=retrieve(query)
+    context='\n\n'.join(
+        f"SOURCE {c.get('source','Innovaction')} | type={c.get('source_type','unknown')} | tags={','.join(c.get('tags',[]))} | confidence={c.get('confidence','n/a')}\n{c.get('text','')}"
+        for c in ctx
+    )
     schema=Plan.model_json_schema()
-    user={**req.model_dump(),'retrieved_context':context,'json_schema':schema}
-    base=os.getenv('SPARK_LLM_BASE_URL','http://127.0.0.1:8000/v1').rstrip('/')
-    model=os.getenv('SPARK_LLM_MODEL','Qwen/Qwen3.8-27B-FP8')
+    user={**req.model_dump(),'retrieved_context':context,'json_schema':schema,
+          'instructions':'Use the retrieved Innovaction sources as the primary methodological basis. Compose a practical sequence rather than copying one activity blindly. Cite the source image/file names used in references. Return every user-facing field in the requested language.'}
+    base=os.getenv('SPARK_LLM_BASE_URL','http://127.0.0.1:8001/v1').rstrip('/')
+    model=os.getenv('SPARK_LLM_MODEL','Qwen/Qwen2.5-7B-Instruct')
     key=os.getenv('SPARK_LLM_API_KEY','local')
-    async with httpx.AsyncClient(timeout=120) as client:
-        r=await client.post(base+'/chat/completions',headers={'Authorization':f'Bearer {key}'},json={'model':model,'temperature':0.45,'messages':[{'role':'system','content':SYSTEM_PROMPT},{'role':'user','content':json.dumps(user,ensure_ascii=False)}]})
-        r.raise_for_status(); txt=r.json()['choices'][0]['message']['content'].strip()
-    txt=re.sub(r'^```(?:json)?|```$','',txt,flags=re.M).strip()
-    return Plan.model_validate(json.loads(txt))
+    async with httpx.AsyncClient(timeout=180) as client:
+        r=await client.post(base+'/chat/completions',headers={'Authorization':f'Bearer {key}'},json={
+            'model':model,'temperature':0.35,'max_tokens':2600,
+            'messages':[{'role':'system','content':SYSTEM_PROMPT},{'role':'user','content':json.dumps(user,ensure_ascii=False)}]
+        })
+        if r.status_code>=400: raise HTTPException(502,f'Composer LLM error {r.status_code}: {r.text[:1000]}')
+        txt=r.json()['choices'][0]['message']['content'].strip()
+    txt=re.sub(r'^```(?:json)?\s*|\s*```$','',txt,flags=re.M).strip()
+    try:
+        return Plan.model_validate(json.loads(txt))
+    except Exception as e:
+        raise HTTPException(502,f'Invalid JSON from composer: {e}; preview={txt[:800]}')
