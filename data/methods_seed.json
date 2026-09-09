@@ -1,0 +1,14 @@
+[
+ {"name":"Problem framing & strategy","pages":"135-136","purpose":"Define the problem, alternatives, strategy, implementation and monitoring."},
+ {"name":"Creative processes","pages":"136+","purpose":"Combine scientific foundations, creativity, multidisciplinary work and structured play."},
+ {"name":"Innovation Games","pages":"147+","purpose":"Recombine methods, places and practices to construct new scenarios from a challenge."},
+ {"name":"Design Thinking + Canvas","pages":"154+","purpose":"Understand needs and build value propositions collaboratively."},
+ {"name":"Customer Journey","pages":"148+","purpose":"Explore decision, experience and remembered utility around a value proposition."},
+ {"name":"TRL 1-9","pages":"519-541","purpose":"Estimate technology maturity and define evidence required for the next transition."},
+ {"name":"POC vs MVP","pages":"39-41, 525+","purpose":"Separate technical feasibility evidence from market/adoption evidence."},
+ {"name":"Technology surveillance & IP","pages":"484+","purpose":"Check prior art, patents, competitive advantage and freedom to operate."},
+ {"name":"Triple helix","pages":"628+","purpose":"Structure collaboration among academia, industry and government when it adds execution value."},
+ {"name":"ISO 5600x innovation management","pages":"674+","purpose":"Connect innovation strategy, capabilities, collaboration and transition to market."},
+ {"name":"Innovation metrics","pages":"784+","purpose":"Measure knowledge/technology outputs, creative outputs and the enabling environment."},
+ {"name":"Industry 4.0 lenses","pages":"931+","purpose":"Explore IoT, robotics, cloud, additive manufacturing, cybersecurity, AR, simulation and big data."}
+]
