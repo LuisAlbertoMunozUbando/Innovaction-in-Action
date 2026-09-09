@@ -13,7 +13,7 @@ except ModuleNotFoundError:
 ROOT=Path(__file__).resolve().parent.parent
 TEXT_DATA=ROOT/'data'/'chunks.json'
 IMAGE_DATA=ROOT/'data'/'image_chunks.json'
-app=FastAPI(title='Innovaction in Action API',version='0.2.1')
+app=FastAPI(title='Innovaction in Action API',version='0.2.2')
 
 class Req(BaseModel):
     language:str='es'; objective:str; organization:Optional[str]=None; audience:Optional[str]=None
@@ -41,7 +41,7 @@ def load_chunks():
 def tokenize(text):
     return set(re.findall(r'[\wáéíóúñü]+', (text or '').lower(), flags=re.UNICODE))
 
-def retrieve(query,k=10):
+def retrieve(query,k=6):
     chunks=load_chunks(); q=tokenize(query); ranked=[]
     for c in chunks:
         text=c.get('text',''); words=tokenize(text)
@@ -56,17 +56,17 @@ def retrieve(query,k=10):
         if score>0: ranked.append((score,c))
     ranked.sort(key=lambda x:x[0],reverse=True)
     seen=set(); result=[]
-    for _,c in ranked:
+    for score,c in ranked:
         key=(c.get('source'),c.get('page'))
         if key in seen: continue
-        seen.add(key); result.append(c)
+        seen.add(key); c=dict(c); c['_score']=score; result.append(c)
         if len(result)>=k: break
     return result
 
 @app.get('/health')
 def health():
     chunks=load_chunks()
-    return {'ok':True,'service':'innovaction-in-action','version':'0.2.1','knowledge_chunks':len(chunks)}
+    return {'ok':True,'service':'innovaction-in-action','version':'0.2.2','knowledge_chunks':len(chunks)}
 
 @app.get('/knowledge/status')
 def knowledge_status():
@@ -76,24 +76,28 @@ def knowledge_status():
         conf=c.get('confidence','n/a'); by_confidence[conf]=by_confidence.get(conf,0)+1
     return {'total_chunks':len(chunks),'by_type':by_type,'by_confidence':by_confidence,'text_file':TEXT_DATA.exists(),'image_file':IMAGE_DATA.exists()}
 
+@app.get('/debug/retrieve')
+def debug_retrieve(q:str):
+    return [{'source':c.get('source'),'score':c.get('_score'),'confidence':c.get('confidence'),'tags':c.get('tags',[]),'preview':c.get('text','')[:500]} for c in retrieve(q)]
+
 @app.post('/generate',response_model=Plan)
 async def generate(req:Req,x_api_key:str|None=Header(default=None)):
     check(x_api_key)
     query=' '.join(filter(None,[req.objective,req.organization,req.audience,req.maturity,req.constraints]))
     ctx=retrieve(query)
     context='\n\n'.join(
-        f"SOURCE {c.get('source','Innovaction')} | type={c.get('source_type','unknown')} | tags={','.join(c.get('tags',[]))} | confidence={c.get('confidence','n/a')}\n{c.get('text','')}"
+        f"SOURCE {c.get('source','Innovaction')} | type={c.get('source_type','unknown')} | tags={','.join(c.get('tags',[]))} | confidence={c.get('confidence','n/a')}\n{c.get('text','')[:1800]}"
         for c in ctx
     )
     schema=Plan.model_json_schema()
     user={**req.model_dump(),'retrieved_context':context,'json_schema':schema,
-          'instructions':'Use the retrieved Innovaction sources as the primary methodological basis. Prefer high-confidence sources over low-confidence ones. Compose a practical sequence rather than copying one activity blindly. Cite the source image/file names used in references. Return every user-facing field in the requested language.'}
+          'instructions':'Use the retrieved Innovaction sources as the primary methodological basis. Prefer high-confidence sources over low-confidence ones. Compose a practical sequence rather than copying one activity blindly. Keep the plan concise and ensure activity minutes sum approximately to durationMinutes. Cite the source image/file names used in references. Return every user-facing field in the requested language. Return valid JSON only.'}
     base=os.getenv('SPARK_LLM_BASE_URL','http://127.0.0.1:8001/v1').rstrip('/')
     model=os.getenv('SPARK_LLM_MODEL','Qwen/Qwen2.5-7B-Instruct')
     key=os.getenv('SPARK_LLM_API_KEY','local')
-    async with httpx.AsyncClient(timeout=180) as client:
+    async with httpx.AsyncClient(timeout=120) as client:
         r=await client.post(base+'/chat/completions',headers={'Authorization':f'Bearer {key}'},json={
-            'model':model,'temperature':0.35,'max_tokens':2600,
+            'model':model,'temperature':0.25,'max_tokens':1400,
             'messages':[{'role':'system','content':SYSTEM_PROMPT},{'role':'user','content':json.dumps(user,ensure_ascii=False)}]
         })
         if r.status_code>=400: raise HTTPException(502,f'Composer LLM error {r.status_code}: {r.text[:1000]}')
