@@ -1,1 +1,9 @@
-{"framework":"nextjs"}
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "frontend": {
+      "root": ".",
+      "framework": "nextjs"
+    }
+  }
+}
